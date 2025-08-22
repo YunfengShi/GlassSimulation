@@ -1,0 +1,240 @@
+units           lj
+atom_style      atomic
+atom_modify     map array
+
+read_data       glass.readdata
+replicate	6 6 1
+reset_timestep  0
+
+mass            1 2.0
+mass            2 1.0
+
+variable        t equal 0.120
+
+variable        bump equal 1.1
+pair_style      lj/cut/bump 1.4
+pair_coeff      1 1 1.0 1.0 1.2 1.0 ${bump} 1.4
+pair_coeff      1 2 1.0 0.9166666666667 1.2 1.0 ${bump} 1.2833333333
+pair_coeff      2 2 1.0 0.8333333333333 1.2 1.0 ${bump} 1.1666666667
+
+pair_modify     shift yes tail no
+
+neighbor        0.2 bin
+neigh_modify    every 20 delay 0 check yes
+
+# Variable R controls the strainrate applied during the constant-K tensile test
+# Check variable realR (the instantaneous strain rate applied)
+# realR = (targetK-nowK)*R*0.1
+# For example, at the initial condition, K_target is 19 RU, realR will be (19-0)*0.00005*0.1=0.000095 RU, which is 1.9E-4 1/ps.
+variable R equal 0.00005 
+
+variable epercentage equal 0.45 # the percentage the body is compressed
+variable                tmpxln equal "xlo"
+variable                tmpxhn equal "xhi"
+
+variable                tmpyln equal "ylo"
+variable                tmpyhn equal "yhi"
+
+variable                tmpzln equal "zlo"
+variable                tmpzhn equal "zhi"
+
+variable                ylnew0 equal ${tmpyln}+12 #4 #ly/5
+variable                yhnew0 equal ${tmpyhn}-12 #4 #ly/5
+
+variable                xlnew0 equal ${tmpxhn}-lx*0.3075
+variable                xhnew0 equal ${tmpxhn}-lx*0.1357
+
+variable                zlnew0 equal ${tmpzln}+lz/6.5
+variable                zhnew0 equal ${tmpzhn}-lz/6.5
+
+variable                xlnew equal ${tmpxln}+lx/5.3
+variable                xhnew equal ${tmpxhn}-lx/5.3
+
+variable                zlnew equal ${tmpzln}-lz
+variable                zhnew equal ${tmpzhn}+lz
+
+variable                halfx equal xlo+lx/2
+variable                halfy equal ylo+ly/2
+variable                halfwidth equal ly/8
+variable                halfheight equal ${halfwidth}/5-2.0
+
+# set the shape of the diamond pre-notch. The default is 70 in length and 15 in height both in RU
+variable		notchh equal 15
+variable		notchw equal 70
+
+# The smaller notch is for smaller system for testing, should be commented off for bigger system
+variable		lxvalue equal lx
+if "${lxvalue} < 100" then &
+"variable		notchh equal 5" &
+"variable		notchw equal 15"
+
+#Create diamond-shaped notch
+variable		xnow1 equal ${halfx}-0.5*${notchw}
+variable		xnow2 equal ${halfx}+0.5*${notchw}
+variable		ynow1 equal ${halfy}-0.5*${notchh}
+variable		ynow2 equal ${halfy}+0.5*${notchh}
+region			r1 plane ${halfx} ${ynow2} 0.0 ${notchh} -${notchw} 0.0
+region			r2 plane ${halfx} ${ynow1} 0.0 -${notchh} ${notchw} 0.0
+region			r3 plane ${halfx} ${ynow2} 0.0 -${notchh} -${notchw} 0.0
+region			r4 plane ${halfx} ${ynow1} 0.0 ${notchh} ${notchw} 0.0
+region			rnotch intersect 4 r1 r2 r3 r4
+delete_atoms		region rnotch
+
+group  g_nano type 1 2
+
+compute        peratom all stress/atom NULL
+
+timestep        0.005 #100000
+
+thermo  100000
+
+fix     5 all nvt temp $t $t 0.5
+run     0 #5000000 #00
+unfix   5
+
+variable lxr equal xhi-xlo
+
+restart         100000 restartpull.MD_*
+
+variable yl equal ${tmpyln}
+variable yh equal ${tmpyln}+8
+variable leny equal ${yh}-${yl}
+variable lenz equal ${tmpzhn}-${tmpzln}
+
+#Allowed tolerance between the instant K and target K, relative amount
+variable tol equal 0.05
+
+#Far field stress is calculated from region r_farfield
+region          r_farfield block INF INF ${yl} ${yh} INF INF units box
+group           g_farfield region r_farfield
+variable        n_farfield equal count(g_farfield)
+variable	debug equal ${n_farfield}
+
+compute        peratomy g_farfield stress/atom NULL
+compute        p g_farfield reduce sum c_peratomy[2]
+variable	volfarfield equal (${yh}-${yl})*lx*lz
+
+#Far field stress value, which is used to calculate the instant K
+variable       avgpressy equal -c_p/${volfarfield} 
+
+variable	xcmin equal 0.0
+variable	xcmax equal 0.0
+variable	cracklength equal 0.0
+variable	targetsif equal 0.0
+variable	sif equal 0.0
+
+dump            2d all custom 1 ini3.mech id type x y z vx vy vz fx fy fz c_peratom[2] # c_1b c_cx
+
+thermo_style    custom step atoms temp pe etotal pxx pyy pzz lx ly lz press vol v_xcmin v_xcmax v_avgpressy v_cracklength v_targetsif v_sif c_p # c_5 c_6 c_p c_rt[1] c_rt[2] v_vcx v_vcy v_v1c v_vcid v_avgc v_avgpressy c_1dmin c_1dminid[1] #temp pe ke etotal vol press c_3 c_4 c_11[1] c_12[1]
+thermo          100 #1dminid
+run             0
+undump 2d
+
+
+fix     5 all nvt temp $t $t 0.5
+run     0 #5000000 #00
+unfix   5
+
+dump            1 all custom 100000 ini.mech id type x y z vx vy vz fx fy fz c_peratom[2] # c_latape v_flagsurface # c_1b
+thermo          100
+run             0
+
+variable cracktipl equal v_xcmin
+variable cracktipr equal v_xcmax
+
+variable cracktipold equal v_cracktipl
+variable cracklength equal ${xcmax}-${xcmin}
+variable       targetsif equal 19
+variable       toltargetsif1 equal ${targetsif}-${tol}*${targetsif}
+variable       toltargetsif2 equal ${targetsif}+${tol}*${targetsif}
+
+# instant K calculation
+variable       sif equal -${avgpressy}*(sqrt(${cracklength}/2))*(sqrt(3.1416))*sqrt(1/cos((3.1416*(${cracklength}/2))/${lxr}))
+
+fix	5 all npt temp $t $t 0.5 x 0.0 0.0 1.0
+label      delete
+variable   j loop 10000
+
+
+###########Obtain the crack length here##################
+run     0 
+
+log	none
+
+variable latawidth equal 5.0
+variable latabins equal 200
+variable lataystep equal 2.5
+variable binwidth equal (xhi-xlo)/${latabins}
+variable latacmin equal -1
+variable latacmax equal -1
+variable latai loop ${latabins}
+        label latacrack
+        variable lataxlo equal xlo+${binwidth}*(${latai}-1)
+        variable lataxhi equal xlo+${binwidth}*${latai}
+	
+	variable lataden equal 2.0
+	variable lataj loop 9
+	label latacracky
+		variable latayshift equal ${lataystep}*(${lataj}-5)
+	        variable lataylo equal ylo+0.5*(yhi-ylo)-0.5*${latawidth}+${latayshift}
+	        variable latayhi equal ylo+0.5*(yhi-ylo)+0.5*${latawidth}+${latayshift}
+	        region lataregion block ${lataxlo} ${lataxhi} ${lataylo} ${latayhi} INF INF units box
+	        group latagroup region lataregion
+	        group lataglassgroup intersect latagroup g_nano
+	        variable latadeni equal 1.0*count(lataglassgroup)/(lz*${binwidth}*${latawidth})
+		variable debug equal ${lataden}
+		variable debug equal ${latadeni}
+		variable debug equal ${latai}
+		variable debug equal ${lataj}
+		if "(${latadeni} < ${lataden})" then "variable lataden equal ${latadeni}"
+	        variable debug equal ${lataden}
+	        variable latacenter equal ${lataxlo}+0.5*${binwidth}
+	        variable bcenter equal xlo+0.5*(xhi-xlo)
+        	group latagroup clear
+        	group lataglassgroup clear
+	        region lataregion delete
+		next lataj
+	jump	in.notch latacracky
+
+	if "(${lataden} < 0.8) && (${latacmin} < 0) && (${latacenter}<${bcenter})" then "variable latacmin equal ${latacenter}"
+        if "(${latacmax} < 0) && ${lataden} > 0.8 && (${latacenter}>${bcenter})" then "variable latacmax equal ${latacenter}"
+        variable latadebug equal ${lataden}
+        variable latadebug equal ${latacmin}
+        variable latadebug equal ${latacmax}
+        next latai
+jump    in.notch latacrack
+variable        xcmin equal ${latacmin}
+variable        xcmax equal ${latacmax}
+#
+#
+variable cracktipl equal v_xcmin
+variable cracktipr equal v_xcmax
+variable cracklength equal ${xcmax}-${xcmin}
+
+log log.lammps append
+variable       sif equal -${avgpressy}*(sqrt(${cracklength}/2))*(sqrt(3.1416))*sqrt(1/cos((3.1416*(${cracklength}/2))/${lxr}))
+
+thermo          1000
+run             0
+
+variable ti equal step
+variable myly equal ly
+variable	realR equal ${R}*(${targetsif}-${sif})*0.1
+print "123456 ${ti} ${cracklength} ${sif} ${realR} ${myly}" append cracklength.dat screen no
+
+
+run      0
+group           g_3 type 3
+
+fix		6 all deform 1 y erate ${realR} units box remap x
+run		10000
+unfix		6
+
+#After tension, run more at zero strain rate in a holding state
+
+run 10000
+variable cracktipold equal v_cracktipl
+
+next        j
+
+jump        in.notch delete

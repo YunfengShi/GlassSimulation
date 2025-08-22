@@ -1,0 +1,71 @@
+# 3d Lennard-Jones melt
+
+units		lj
+atom_style	atomic
+
+# This initial configuration has the correct number density such that upon cooling in NVT, the resulting glass is stress-free
+# This initial configuration is generally obtained by a trial cooling, NPT relaxation, then remelt-cooling.
+read_data	tobemelted.initial.readdata
+
+replicate	2 2 6
+
+mass		1 2.0
+mass		2 1.0
+
+velocity	all create 1.2 87287
+
+variable	a equal 1.5
+variable	b equal 0.35
+variable	t equal 1.2
+variable	w equal 0.016
+variable	p equal 2.0
+variable	l equal 30.602501*2/3.0
+variable	z equal $l*3
+
+
+variable        bump equal 1.1
+#Bump, relative_start relative_end, relative_energy, 4.9s
+pair_style      lj/cut/bump 1.4
+pair_coeff      1 1 1.0 1.0 1.2 1.0 ${bump} 1.4
+pair_coeff      1 2 1.0 0.9166666666667 1.2 1.0 ${bump} 1.2833333333
+pair_coeff      2 2 1.0 0.8333333333333 1.2 1.0 ${bump} 1.1666666667
+
+pair_modify	shift yes tail no
+
+neighbor	0.5 bin
+neigh_modify	every 10 delay 0 check no
+
+timestep	0.005
+
+thermo		100
+thermo_style    custom step temp pe etotal temp vol press pxx pyy pzz pxz lx ly lz enthalpy
+
+reset_timestep	0
+
+dump            3 all xyz 10000 latadump.xyz
+dump            4 all custom 100000 lata4olivia id type x y z vx vy vz fx fy fz
+
+fix		1 all nvt temp $t $w 1.0
+run		1000000
+
+log             log.mech
+
+undump		3
+undump		4
+dump            4 all custom 10000 lata4olivia.mech id type x y z vx vy vz fx fy fz
+dump            3 all xyz 10000 latadump.mech.xyz
+
+run             0
+variable        a equal pxx
+variable        b equal pyy
+variable        c equal pzz
+print           "pxx is $a, pyy is $b, pzz is $c"
+
+unfix           1
+fix             1 all npt temp $w $w 1.0 x $a 0.0 1.0 y $b 0.0 1.0 z $c 0.0 1.0
+run             20000
+
+unfix           1
+fix             1 all npt temp $w $w 1.0 x 0.0 0.0 1.0 y 0.0 0.0 1.0
+fix             2 all deform 1 z trate 0.0001
+run             500000
